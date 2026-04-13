@@ -1,6 +1,6 @@
-import json
 import os
 import datetime
+import psycopg2
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
@@ -13,62 +13,119 @@ from telegram.ext import (
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-DATA_FILE = "data_many.json"
-awaiting_goal_chats = {}  # словарь chat_id -> bool, чтобы помнить, где ожидаем цель
-
+conn = psycopg2.connect(DATABASE_URL)
+conn.autocommit = True
+cur = conn.cursor()
 
 # ---------- DATA ----------
 
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {"chats": {}}
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
+def init_db():
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS chats (
+        chat_id TEXT PRIMARY KEY,
+        goal INTEGER
+    );
+    """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id TEXT,
+        chat_id TEXT,
+        username TEXT,
+        trainings TEXT[],
+        PRIMARY KEY (user_id, chat_id)
+    );
+    """)
 
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-
-data = load_data()
+init_db()
 
 
 # ---------- HELPERS ----------
 
 def get_chat_data(chat_id):
     chat_id = str(chat_id)
-    if chat_id not in data["chats"]:
-        data["chats"][chat_id] = {"goal": None, "users": {}}
-    return data["chats"][chat_id]
 
+    cur.execute("SELECT goal FROM chats WHERE chat_id=%s", (chat_id,))
+    row = cur.fetchone()
+
+    if row is None:
+        cur.execute("INSERT INTO chats (chat_id, goal) VALUES (%s, %s)", (chat_id, None))
+
+    return {"chat_id": chat_id, "goal": row[0] if row else None}
+
+def set_goal(chat_id, goal):
+    chat_id = str(chat_id)
+
+    cur.execute("""
+        INSERT INTO chats (chat_id, goal)
+        VALUES (%s, %s)
+        ON CONFLICT (chat_id)
+        DO UPDATE SET goal = EXCLUDED.goal
+    """, (chat_id, goal))
+
+def get_user(chat_id, user_id):
+    chat_id = str(chat_id)
+    user_id = str(user_id)
+
+    cur.execute("""
+        SELECT username, trainings
+        FROM users
+        WHERE chat_id=%s AND user_id=%s
+    """, (chat_id, user_id))
+
+    return cur.fetchone()
+
+def get_all_users(chat_id):
+    chat_id = str(chat_id)
+
+    cur.execute("""
+        SELECT username, trainings
+        FROM users
+        WHERE chat_id=%s
+    """, (chat_id,))
+
+    return cur.fetchall()
+
+def add_training_and_get_count(chat_id, user_id, username, today):
+    cur.execute("""
+        INSERT INTO users (user_id, chat_id, username, trainings)
+        VALUES (%s, %s, %s, ARRAY[%s])
+        ON CONFLICT (user_id, chat_id)
+        DO UPDATE SET
+            trainings = array_append(users.trainings, %s),
+            username = EXCLUDED.username
+        RETURNING array_length(trainings, 1)
+    """, (user_id, chat_id, username, today, today))
+
+    return cur.fetchone()[0]
 
 def build_status(chat_id):
-    chat_data = get_chat_data(chat_id)
-    goal = chat_data["goal"]
-    users = chat_data["users"]
+    chat_id = str(chat_id)
+    cur.execute("SELECT goal FROM chats WHERE chat_id=%s", (chat_id,))
+    goal = cur.fetchone()
+
+    goal = goal[0] if goal else None
+    users = get_all_users(chat_id)
 
     if goal is None:
         return "Цель ещё не установлена."
     if not users:
         return "Пока нет тренировок."
+        
+    leaderboard = sorted(users, key=lambda u: len(u[1]), reverse=True)
 
-    leaderboard = sorted(users.values(), key=lambda u: len(u["trainings"]), reverse=True)
     text = "Статус:\n\n"
     for u in leaderboard:
-        count = len(u["trainings"])
-        text += f'{u["username"]}: {count}/{goal}\n'
+        text += f"{u[0]}: {len(u[1])}/{goal}\n"
+
     return text
 
 
 # ---------- START ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    get_chat_data(chat_id)  # инициализация данных для чата
-    save_data(data)
-
     keyboard = [[
         InlineKeyboardButton("Новая цель", callback_data="new_goal"),
         InlineKeyboardButton("Статус", callback_data="status")
@@ -88,10 +145,25 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- NEW GOAL ----------
 
+async def show_goal_buttons(chat_id, context):
+    keyboard = [[
+        InlineKeyboardButton("5", callback_data="5"),
+        InlineKeyboardButton("10", callback_data="10"),
+        InlineKeyboardButton("15", callback_data="15"),
+        InlineKeyboardButton("20", callback_data="20"),
+        InlineKeyboardButton("25", callback_data="25"),
+        InlineKeyboardButton("30", callback_data="30"),
+    ]]
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="Сколько тренировок вы хотите сделать в этом месяце?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
 async def new_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    awaiting_goal_chats[str(chat_id)] = True
-    await update.message.reply_text("Сколько тренировок вы хотите сделать в этом месяце?")
+    await show_goal_buttons(chat_id, context)
 
 
 # ---------- BUTTONS ----------
@@ -102,26 +174,32 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
 
     if query.data == "new_goal":
-        awaiting_goal_chats[str(chat_id)] = True
-        await query.message.reply_text("Сколько тренировок вы хотите сделать в этом месяце?")
+        await show_goal_buttons(chat_id, context)
     elif query.data == "status":
         await query.message.reply_text(build_status(chat_id))
+    elif query.data in ["5", "10", "15", "20", "25", "30"]:
+        goal = int(query.data)
+        set_goal(chat_id, goal)
+
+        await query.message.reply_text(
+            f"Цель установлена: {goal} тренировок 💪"
+        )
 
 
 # ---------- TEXT INPUT ----------
 
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
-    if awaiting_goal_chats.get(chat_id):
-        try:
-            goal = int(update.message.text)
-            chat_data = get_chat_data(chat_id)
-            chat_data["goal"] = goal
-            save_data(data)
-            awaiting_goal_chats[chat_id] = False
-            await update.message.reply_text(f"Цель установлена: {goal} тренировок.")
-        except:
-            await update.message.reply_text("Введите число.")
+# async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     chat_id = str(update.effective_chat.id)
+#     if awaiting_goal_chats.get(chat_id):
+#         try:
+#             goal = int(update.message.text)
+#             chat_data = get_chat_data(chat_id)
+#             chat_data["goal"] = goal
+#             save_data(data)
+#             awaiting_goal_chats[chat_id] = False
+#             await update.message.reply_text(f"Цель установлена: {goal} тренировок.")
+#         except:
+#             await update.message.reply_text("Введите число.")
 
 
 # ---------- TRAINING ----------
@@ -130,7 +208,6 @@ async def new_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     chat_data = get_chat_data(chat_id)
     goal = chat_data["goal"]
-    users = chat_data["users"]
 
     if goal is None:
         await update.message.reply_text("Сначала установите цель.")
@@ -138,66 +215,68 @@ async def new_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = str(update.effective_user.id)
     username = update.effective_user.username or update.effective_user.first_name
-
-    if user_id not in users:
-        users[user_id] = {"username": username, "trainings": []}
-
+    user = get_user(chat_id, user_id)
     today = datetime.date.today().isoformat()
 
-    if today in users[user_id]["trainings"]:
-        await update.message.reply_text("сегодняшняя тренировка уже записана")
+    if user and today in user[1]:
+        await update.message.reply_text("Сегодняшняя тренировка уже записана")
         return
 
-    users[user_id]["trainings"].append(today)
-    save_data(data)
+    count = add_training_and_get_count(chat_id, user_id, username, today)
 
-    count = len(users[user_id]["trainings"])
     remaining = max(goal - count, 0)
-    await update.message.reply_text(
-        f"Молодец, {username}! Ещё одна тренировка сделана, так держать!\n"
-        f"Выполнено {count}/{goal}. Осталось {remaining} тренировок!"
-    )
+
+    if remaining == 0:
+        await update.message.reply_text(
+            f"Браво, {username}! Последняя тренировка завершена!\n"
+            f"Выполнено {count}/{goal} тренировок. Цель достигнута!"
+        )
+    else:
+        await update.message.reply_text(
+            f"Молодец, {username}! Ещё одна тренировка сделана, так держать!\n"
+            f"Выполнено {count}/{goal}. Осталось {remaining} тренировок!"
+        )
 
 
 # ---------- MONTH LEADERBOARD ----------
 
-async def month_summary(context: ContextTypes.DEFAULT_TYPE):
-    for chat_id_str, chat_data in data["chats"].items():
-        chat_id = int(chat_id_str)
-        goal = chat_data["goal"]
-        users = chat_data["users"]
+# async def month_summary(context: ContextTypes.DEFAULT_TYPE):
+#     for chat_id_str, chat_data in data["chats"].items():
+#         chat_id = int(chat_id_str)
+#         goal = chat_data["goal"]
+#         users = chat_data["users"]
 
-        if not users:
-            continue
+#         if not users:
+#             continue
 
-        leaderboard = sorted(users.values(), key=lambda u: len(u["trainings"]), reverse=True)
-        text = "🏆 Итоги месяца\n\n"
-        for i, u in enumerate(leaderboard, start=1):
-            count = len(u["trainings"])
-            text += f"{i}. {u['username']} — {count}\n"
+#         leaderboard = sorted(users.values(), key=lambda u: len(u["trainings"]), reverse=True)
+#         text = "🏆 Итоги месяца\n\n"
+#         for i, u in enumerate(leaderboard, start=1):
+#             count = len(u["trainings"])
+#             text += f"{i}. {u['username']} — {count}\n"
 
-        if goal:
-            winners = [u["username"] for u in leaderboard if len(u["trainings"]) >= goal]
-            if winners:
-                text += "\n🎯 Цель достигли:\n"
-                for w in winners:
-                    text += f"{w}\n"
+#         if goal:
+#             winners = [u["username"] for u in leaderboard if len(u["trainings"]) >= goal]
+#             if winners:
+#                 text += "\n🎯 Цель достигли:\n"
+#                 for w in winners:
+#                     text += f"{w}\n"
 
-        await context.bot.send_message(chat_id=chat_id, text=text)
+#         await context.bot.send_message(chat_id=chat_id, text=text)
 
 
 # ---------- MONTH RESET ----------
 
-async def reset_month(context: ContextTypes.DEFAULT_TYPE):
-    for chat_id_str, chat_data in data["chats"].items():
-        chat_id = int(chat_id_str)
-        chat_data["goal"] = None
-        chat_data["users"] = {}
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Новый месяц! 🎉\n\nУстановите новую цель командой /new-goal"
-        )
-    save_data(data)
+# async def reset_month(context: ContextTypes.DEFAULT_TYPE):
+#     for chat_id_str, chat_data in data["chats"].items():
+#         chat_id = int(chat_id_str)
+#         chat_data["goal"] = None
+#         chat_data["users"] = {}
+#         await context.bot.send_message(
+#             chat_id=chat_id,
+#             text="Новый месяц! 🎉\n\nУстановите новую цель командой /new-goal"
+#         )
+#     save_data(data)
 
 
 # ---------- COMMANDS ----------
@@ -230,7 +309,7 @@ def main():
     app.add_handler(CommandHandler("new_training_completed", new_training))
 
     app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    # app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     app.run_polling()
 
