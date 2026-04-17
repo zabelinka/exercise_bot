@@ -110,15 +110,16 @@ def build_status(chat_id):
     users = get_all_users(chat_id)
 
     if goal is None:
-        return "Цель ещё не установлена."
+        return "⚠️ Цель пока не установлена.\n\nЗадайте её и начнём движение вперёд 💪"
     if not users:
-        return "Пока нет тренировок."
+        return "😴 Пока нет ни одной тренировки.\n\nСамое время начать! 💪"
         
     leaderboard = sorted(users, key=lambda u: len(u[1]), reverse=True)
 
-    text = "Статус:\n\n"
-    for u in leaderboard:
-        text += f"{u[0]}: {len(u[1])}/{goal}\n"
+    text = f"🎯 Цель: {goal}\n\n🏆 Текущий прогресс:\n\n"
+
+    for i, u in enumerate(leaderboard, start=1):
+        text += f"{i}. {u[0]} — {len(u[1])}/{goal}\n"
 
     return text
 
@@ -127,11 +128,13 @@ def build_status(chat_id):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[
-        InlineKeyboardButton("Новая цель", callback_data="new_goal"),
-        InlineKeyboardButton("Статус", callback_data="status")
+        InlineKeyboardButton("🎯 Новая цель", callback_data="new_goal"),
+        InlineKeyboardButton("📊 Статус", callback_data="status")
     ]]
     await update.message.reply_text(
-        "Я бот - челленж тренировок!",
+        "🏋️‍♂️ Добро пожаловать в тренировочный челлендж!\n\n"
+        "Я помогу вам отслеживать прогресс и дойти до цели 💪\n"
+        "Жми кнопку ниже и начинаем!",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -157,7 +160,7 @@ async def show_goal_buttons(chat_id, context):
 
     await context.bot.send_message(
         chat_id=chat_id,
-        text="Сколько тренировок вы хотите сделать в этом месяце?",
+        text="🎯 Сколько тренировок ставим целью на этот месяц?",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -182,7 +185,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_goal(chat_id, goal)
 
         await query.message.reply_text(
-            f"Цель установлена: {goal} тренировок 💪"
+            f"🎯 Цель установлена: {goal} тренировок!\n\nПогнали к результату 💪🔥"
         )
 
 
@@ -228,13 +231,19 @@ async def new_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if remaining == 0:
         await update.message.reply_text(
-            f"Браво, {username}! Последняя тренировка завершена!\n"
-            f"Выполнено {count}/{goal} тренировок. Цель достигнута!"
+            f"🏆 {username}, сделано!\n\n"
+            f"Цель достигнута: {count}/{goal} 🎯\n"
+            "Это было мощно 💪\n"
+            "Впереди новые цели!"
         )
     else:
         await update.message.reply_text(
-            f"Молодец, {username}! Ещё одна тренировка сделана, так держать!\n"
-            f"Выполнено {count}/{goal}. Осталось {remaining} тренировок!"
+            f"🔥 Отличная работа, {username}!\n\n"
+            "+1 тренировка в копилку 💪\n"
+            f"Прогресс: {count}/{goal}\n"
+            f"Осталось: {remaining}\n\n"
+
+            "Только вперед! 🚀"
         )
 
 
