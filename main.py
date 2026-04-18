@@ -1,3 +1,4 @@
+import math
 import os
 import datetime
 import psycopg2
@@ -123,6 +124,28 @@ def build_status(chat_id):
 
     return text
 
+def progress_bar(count, goal):
+    total_slots = 10
+
+    if goal <= 0:
+        return "⚪" * total_slots
+
+    progress = count / goal
+
+    full = int(progress * total_slots)  # fully completed (green)
+
+    bar = []
+
+    for i in range(total_slots):
+        if i < full:
+            bar.append("🟢")
+        elif i == full and count > 0 and full < total_slots:
+            bar.append("🟡")
+        else:
+            bar.append("⚪")
+
+    return "".join(bar)
+
 
 # ---------- START ----------
 
@@ -229,20 +252,23 @@ async def new_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     remaining = max(goal - count, 0)
 
+    bar = progress_bar(count, goal)
+    percent = int((count / goal) * 100)
+
     if remaining == 0:
         await update.message.reply_text(
             f"🏆 {username}, сделано!\n\n"
             f"Цель достигнута: {count}/{goal} 🎯\n"
-            "Это было мощно 💪\n"
-            "Впереди новые цели!"
+            f"{bar} | {percent}%\n\n"
+            "Это было мощно 💪"
         )
     else:
         await update.message.reply_text(
-            f"🔥 Отличная работа, {username}!\n\n"
-            "+1 тренировка в копилку 💪\n"
+            f"🔥 Отличная работа, {username}!\n"
+            "+1 тренировка в копилку 💪\n\n"
             f"Прогресс: {count}/{goal}\n"
-            f"Осталось: {remaining}\n\n"
-
+            f"Осталось: {remaining}\n"
+            f"{bar} | {percent}%\n\n"
             "Только вперед! 🚀"
         )
 
