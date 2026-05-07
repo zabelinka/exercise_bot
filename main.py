@@ -119,7 +119,10 @@ def build_status(chat_id):
     text = f"🎯 Цель: {goal}\n\n🏆 Текущий прогресс:\n\n"
 
     for i, u in enumerate(leaderboard, start=1):
-        text += f"{i}. {u[0]} — {len(u[1])}/{goal}\n"
+        count = len(u[1])
+        bar = progress_bar(count, goal)
+        percent = int((count / goal) * 100)
+        text += f"{i}. {u[0]} — {count}/{goal} {bar} | {percent}%\n"
 
     return text
 
