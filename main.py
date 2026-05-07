@@ -1,6 +1,7 @@
 import math
 import os
 import datetime
+import calendar
 import psycopg2
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -8,9 +9,7 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
-    MessageHandler,
     ContextTypes,
-    filters,
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -211,23 +210,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎯 Цель установлена: {goal} тренировок!\n\nПогнали к результату 💪🔥"
         )
 
-
-# ---------- TEXT INPUT ----------
-
-# async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-#     chat_id = str(update.effective_chat.id)
-#     if awaiting_goal_chats.get(chat_id):
-#         try:
-#             goal = int(update.message.text)
-#             chat_data = get_chat_data(chat_id)
-#             chat_data["goal"] = goal
-#             save_data(data)
-#             awaiting_goal_chats[chat_id] = False
-#             await update.message.reply_text(f"Цель установлена: {goal} тренировок.")
-#         except:
-#             await update.message.reply_text("Введите число.")
-
-
 # ---------- TRAINING ----------
 
 async def new_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -275,43 +257,85 @@ async def new_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- MONTH LEADERBOARD ----------
 
-# async def month_summary(context: ContextTypes.DEFAULT_TYPE):
-#     for chat_id_str, chat_data in data["chats"].items():
-#         chat_id = int(chat_id_str)
-#         goal = chat_data["goal"]
-#         users = chat_data["users"]
+def get_leaderboard(chat_id):
+    chat_id = str(chat_id)
+    cur.execute("SELECT goal FROM chats WHERE chat_id=%s", (chat_id,))
+    goal = cur.fetchone()
 
-#         if not users:
-#             continue
+    goal = goal[0] if goal else None
+    users = get_all_users(chat_id)
 
-#         leaderboard = sorted(users.values(), key=lambda u: len(u["trainings"]), reverse=True)
-#         text = "🏆 Итоги месяца\n\n"
-#         for i, u in enumerate(leaderboard, start=1):
-#             count = len(u["trainings"])
-#             text += f"{i}. {u['username']} — {count}\n"
+    leaderboard = sorted(users, key=lambda u: len(u[1]), reverse=True) if users else None
+    return goal, leaderboard
 
-#         if goal:
-#             winners = [u["username"] for u in leaderboard if len(u["trainings"]) >= goal]
-#             if winners:
-#                 text += "\n🎯 Цель достигли:\n"
-#                 for w in winners:
-#                     text += f"{w}\n"
+def build_leaderboard_text(goal, leaderboard):
+    if not leaderboard:
+        return None
 
-#         await context.bot.send_message(chat_id=chat_id, text=text)
+    medals = ["🥇", "🥈", "🥉"]
 
+    text = "🏆 Итоги месяца\n\n"
+
+    for i, u in enumerate(leaderboard):
+        place = medals[i] if i < 3 else f"{i+1}️."
+
+        text += f"{place} {u[0]} — {len(u[1])}"
+        if goal:
+            text += f"/{goal}"
+        text += "\n"
+
+    return text
+
+def is_last_day_of_month():
+    today = datetime.date.today()
+    return today.day == calendar.monthrange(today.year, today.month)[1]
+
+def is_first_day_of_month():
+    today = datetime.date.today()
+    return today.day == 1
+
+async def send_monthly_leaderboard(context):
+    if not is_last_day_of_month():
+        return
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT chat_id FROM users")
+        chats = cur.fetchall()
+
+    for (chat_id,) in chats:
+        goal, rows = get_leaderboard(chat_id)
+        text = build_leaderboard_text(goal, rows)
+
+        if not text:
+            continue
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text
+        )
 
 # ---------- MONTH RESET ----------
 
-# async def reset_month(context: ContextTypes.DEFAULT_TYPE):
-#     for chat_id_str, chat_data in data["chats"].items():
-#         chat_id = int(chat_id_str)
-#         chat_data["goal"] = None
-#         chat_data["users"] = {}
-#         await context.bot.send_message(
-#             chat_id=chat_id,
-#             text="Новый месяц! 🎉\n\nУстановите новую цель командой /new-goal"
-#         )
-#     save_data(data)
+async def reset_month(context: ContextTypes.DEFAULT_TYPE):
+    if not is_first_day_of_month():
+        return
+
+    # получаем все chat_id
+    cur.execute("""SELECT DISTINCT chat_id FROM chats""")
+    chats = cur.fetchall()
+
+    cur.execute("""DELETE FROM users""")
+    cur.execute("""UPDATE chats SET goal = NULL""")
+
+    # уведомляем чаты
+    for (chat_id,) in chats:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "🎉 Новый месяц начался! Время для новых подвигов!\n\n"
+                "Установите новую цель командой: /new_goal"
+            )
+        )
 
 
 # ---------- COMMANDS ----------
@@ -332,11 +356,9 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.post_init = set_commands
 
-    # job_queue = app.job_queue
-    # # итог месяца в 19:00 последнего дня месяца
-    # job_queue.run_daily(month_summary, time=datetime.time(hour=19, minute=0))
-    # # сброс 1 числа месяца в 08:00
-    # job_queue.run_daily(reset_month, time=datetime.time(hour=8, minute=0))
+    job_queue = app.job_queue
+    job_queue.run_daily(send_monthly_leaderboard, time=datetime.time(hour=20, minute=0))
+    job_queue.run_daily(reset_month, time=datetime.time(hour=8, minute=0))
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
@@ -344,7 +366,6 @@ def main():
     app.add_handler(CommandHandler("new_training_completed", new_training))
 
     app.add_handler(CallbackQueryHandler(buttons))
-    # app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     app.run_polling()
 
