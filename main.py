@@ -122,7 +122,7 @@ def build_status(chat_id):
         count = len(u[1])
         bar = progress_bar(count, goal)
         percent = int((count / goal) * 100)
-        text += f"{i}. {u[0]} — {count}/{goal} {bar} | {percent}%\n"
+        text += f"{i}. {u[0]} — {count}/{goal}\n{bar} | {percent}%\n"
 
     return text
 
@@ -284,7 +284,7 @@ def build_leaderboard_text(goal, leaderboard):
 
         text += f"{place} {u[0]} — {len(u[1])}"
         if goal:
-            text += f"/{goal}"
+            text += f"/{goal}\n   {progress_bar(len(u[1]), goal)} | {int((len(u[1]) / goal) * 100)}%\n"
         text += "\n"
 
     return text
