@@ -271,8 +271,45 @@ def get_leaderboard(chat_id):
     leaderboard = sorted(users, key=lambda u: len(u[1]), reverse=True) if users else None
     return goal, leaderboard
 
+def build_heatmap(trainings_list):
+    today = datetime.date.today()
+    year = today.year
+    month = today.month
+    first_weekday, days_in_month = calendar.monthrange(year, month)
+
+    training_days = set()
+    for date_str in trainings_list or []:
+        try:
+            training_date = datetime.date.fromisoformat(date_str)
+        except ValueError:
+            continue
+
+        if training_date.year == year and training_date.month == month:
+            training_days.add(training_date.day)
+
+    lines = []
+    week = []
+
+    for _ in range(first_weekday):
+        week.append("▫️")
+
+    for day in range(1, days_in_month + 1):
+        mark = "🟩" if day in training_days else "⬜"
+        week.append(mark)
+
+        if len(week) == 7:
+            lines.append(" ".join(week))
+            week = []
+
+    if week:
+        week.extend(["  "] * (7 - len(week)))
+        lines.append(" ".join(week))
+
+    return "\n".join(lines)
+
+
 def build_leaderboard_text(goal, leaderboard):
-    if not leaderboard:
+    if not leaderboard or not goal:
         return None
 
     medals = ["🥇", "🥈", "🥉"]
@@ -282,9 +319,10 @@ def build_leaderboard_text(goal, leaderboard):
     for i, u in enumerate(leaderboard):
         place = medals[i] if i < 3 else f"{i+1}️."
 
+        #u[0] is username, u[1] is trainings list
         text += f"{place} {u[0]} — {len(u[1])}"
-        if goal:
-            text += f"/{goal}\n   {progress_bar(len(u[1]), goal)} | {int((len(u[1]) / goal) * 100)}%\n"
+        text += f"/{goal}\n   {progress_bar(len(u[1]), goal)} | {int((len(u[1]) / goal) * 100)}%\n"
+        text += build_heatmap(u[1])
         text += "\n"
 
     return text
